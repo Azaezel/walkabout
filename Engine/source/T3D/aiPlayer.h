@@ -126,12 +126,15 @@ private:
       SimObjectPtr<SceneObject> object;
       /// Distance at whcih to follow.
       F32 radius;
+      Point3F lastPos;
       /// Default constructor.
       FollowData() : object(NULL)
       {
          radius = 5.0f;
       }
    };
+   /// Distance at which to attack.
+   S32 mAttackRadius;
 
    /// Current object we're following.
    FollowData mFollowData;
@@ -164,6 +167,7 @@ public:
 #endif // TORQUE_WALKABOUT_ENABLED
 
    virtual bool getAIMove( Move *move );
+   virtual void updateMove(const Move *move);
 
    // Targeting and aiming sets/gets
    void setAimObject( GameBase *targetObject );

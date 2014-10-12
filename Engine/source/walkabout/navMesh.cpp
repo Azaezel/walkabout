@@ -112,11 +112,25 @@ DefineConsoleFunction(WalkaboutUpdateAll, void, (S32 objid, bool remove), (0, fa
    SimSet *set = NavMesh::getServerSet();
    for(U32 i = 0; i < set->size(); i++)
    {
-      NavMesh *m = static_cast<NavMesh*>(set->at(i));
+	   NavMesh *m = dynamic_cast<NavMesh*>(set->at(i));
+	   if (m)
+	   {
+		   m->cancelBuild();
       m->buildTiles(obj->getWorldBox());
+   }
    }
    if(remove)
       obj->enableCollision();
+}
+
+DefineConsoleFunction(WalkaboutIgnore, void, (S32 objid, bool _ignore), (0, true),
+   "@brief Flag this object as not generating a navmesh result.")
+{
+   SceneObject *obj;
+   if(!Sim::findObject(objid, obj))
+      return;
+
+      obj->mPathfindingIgnore = _ignore;
 }
 
 DefineConsoleFunction(WalkaboutUpdateMesh, void, (S32 meshid, S32 objid, bool remove), (0, 0, false),
@@ -143,7 +157,7 @@ DefineConsoleFunction(WalkaboutUpdateMesh, void, (S32 meshid, S32 objid, bool re
 
 NavMesh::NavMesh()
 {
-   mTypeMask |= StaticShapeObjectType | MarkerObjectType;
+   mTypeMask |= MarkerObjectType;
    mFileName = StringTable->insert("");
    mNetFlags.clear(Ghostable);
 
@@ -776,13 +790,13 @@ void NavMesh::buildNextTile()
       // Generate navmesh for this tile.
       U32 dataSize = 0;
       unsigned char* data = buildTileData(tile, tdata, dataSize);
-      if(data)
-      {
          // Remove any previous data.
          nm->removeTile(nm->getTileRefAt(tile.x, tile.y, 0), 0, 0);
+      if(data)
+      {
          // Add new data (navmesh owns and deletes the data).
          dtStatus status = nm->addTile(data, dataSize, DT_TILE_FREE_DATA, 0, 0);
-         int success = 1;
+         S32 success = 1;
          if(dtStatusFailed(status))
          {
             success = 0;
@@ -819,6 +833,7 @@ void NavMesh::buildNextTile()
 static void buildCallback(SceneObject* object,void *key)
 {
    SceneContainer::CallbackInfo* info = reinterpret_cast<SceneContainer::CallbackInfo*>(key);
+   if (!object->mPathfindingIgnore)
    object->buildPolyList(info->context,info->polyList,info->boundingBox,info->boundingSphere);
 }
 
@@ -838,9 +853,10 @@ unsigned char *NavMesh::buildTileData(const Tile &tile, TileData &data, U32 &dat
    SceneContainer::CallbackInfo info;
    info.context = PLC_Navigation;
    info.boundingBox = box;
+   data.geom.clear();
    info.polyList = &data.geom;
    info.key = this;
-   getContainer()->findObjects(box, StaticShapeObjectType | TerrainObjectType, buildCallback, &info);
+   getContainer()->findObjects(box, StaticObjectType | DynamicShapeObjectType, buildCallback, &info);
 
    // Parse water objects into the same list, but remember how much geometry was /not/ water.
    U32 nonWaterVertCount = data.geom.getVertCount();

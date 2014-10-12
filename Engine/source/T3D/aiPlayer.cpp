@@ -86,6 +86,7 @@ ConsoleDocClass( AIPlayer,
  */
 AIPlayer::AIPlayer()
 {
+    mTypeMask |= PlayerObjectType | DynamicShapeObjectType;
    mMoveDestination.set( 0.0f, 0.0f, 0.0f );
    mMoveSpeed = 1.0f;
    mMoveTolerance = 0.25f;
@@ -140,6 +141,9 @@ void AIPlayer::initPersistFields()
          "to accelerate to full speed without its initial slow start being considered as stuck.\n"
          "@note Set to zero to have the stuck test start immediately.\n");
 
+      addField( "AttackRadius", TypeS32, Offset( mAttackRadius, AIPlayer ), 
+         "@brief Distance considered in firing range for callback purposes.");
+      	  
    endGroup( "AI" );
 
 #ifdef TORQUE_WALKABOUT_ENABLED
@@ -316,10 +320,15 @@ bool AIPlayer::getAIMove(Move *movePtr)
          {
             if((mPathData.path->mTo - mFollowData.object->getPosition()).len() > mFollowData.radius)
                repath();
-            else if((getPosition() - mFollowData.object->getPosition()).len() < mFollowData.radius)
+			else if (((getPosition() - mFollowData.object->getPosition()).len() < mFollowData.radius) && (mTargetInLOS))
             {
                clearPath();
                mMoveState = ModeStop;
+			   throwCallback("onTargetInRange");
+            }
+         else if((getPosition() - mFollowData.object->getPosition()).len() < mAttackRadius)
+            {
+			   throwCallback("onTargetInFiringRange");
             }
          }
       }
@@ -331,7 +340,7 @@ bool AIPlayer::getAIMove(Move *movePtr)
    if (mAimObject || mAimLocationSet || mMoveState != ModeStop) 
    {
       // Update the aim position if we're aiming for an object
-      if (mAimObject)
+	   if ((mAimObject) && (mTargetInLOS))
          mAimLocation = mAimObject->getPosition() + mAimOffset;
       else
          if (!mAimLocationSet)
@@ -451,7 +460,7 @@ bool AIPlayer::getAIMove(Move *movePtr)
          {
             F32 speed = mMoveSpeed;
             F32 dist = mSqrt(xDiff*xDiff + yDiff*yDiff);
-            F32 maxDist = 5.0f;
+            F32 maxDist = mMoveTolerance*2;
             if (dist < maxDist)
                speed *= dist / maxDist;
             movePtr->x *= speed;
@@ -478,7 +487,7 @@ bool AIPlayer::getAIMove(Move *movePtr)
                // If we are slowing down, then it's likely that our location delta will be less than
                // our move stuck tolerance. Because we can be both slowing and stuck
                // we should TRY to check if we've moved. This could use better detection.
-               if ( mMoveState != ModeSlowing || locationDelta == 0 )
+               if ((!mFalling)&&(mMoveState != ModeSlowing || locationDelta == 0))
                {
                   mMoveState = ModeStuck;
 #ifdef TORQUE_WALKABOUT_ENABLED
@@ -495,28 +504,21 @@ bool AIPlayer::getAIMove(Move *movePtr)
    // Test for target location in sight if it's an object. The LOS is
    // run from the eye position to the center of the object's bounding,
    // which is not very accurate.
-   if (mAimObject) {
-      MatrixF eyeMat;
-      getEyeTransform(&eyeMat);
-      eyeMat.getColumn(3,&location);
-      Point3F targetLoc = mAimObject->getBoxCenter();
-
-      // This ray ignores non-static shapes. Cast Ray returns true
-      // if it hit something.
-      RayInfo dummy;
-      if (getContainer()->castRay( location, targetLoc,
-            StaticShapeObjectType | StaticObjectType |
-            TerrainObjectType, &dummy)) {
-         if (mTargetInLOS) {
-            throwCallback( "onTargetExitLOS" );
-            mTargetInLOS = false;
-         }
-      }
-      else
-         if (!mTargetInLOS) {
+   if (mAimObject)
+   {
+      if (checkInLos(mAimObject.getPointer()))
+      {
+         if (!mTargetInLOS)
+         {
             throwCallback( "onTargetEnterLOS" );
             mTargetInLOS = true;
          }
+   }
+      else if (mTargetInLOS)
+      {
+         throwCallback("onTargetExitLOS");
+         mTargetInLOS = false;
+      }
    }
 
    // Replicate the trigger state into the move so that
@@ -545,6 +547,14 @@ bool AIPlayer::getAIMove(Move *movePtr)
    mLastLocation = location;
 
    return true;
+}
+
+void AIPlayer::updateMove(const Move* move)  
+{  
+   if (!getControllingClient() && isGhost())  
+      return;  
+  
+   Parent::updateMove(move);  
 }
 
 /**
@@ -672,6 +682,7 @@ bool AIPlayer::setPathDestination(const Point3F &pos)
    if(!getNavMesh())
    {
       //setMoveDestination(pos);
+      throwCallback("onPathFailed");
       return false;
    }
 
@@ -690,11 +701,15 @@ bool AIPlayer::setPathDestination(const Point3F &pos)
       if(!path->registerObject())
       {
          delete path;
+         throwCallback("onPathFailed");
          return false;
       }
    }
    else
+   {
+      throwCallback("onPathFailed");
       return false;
+   }
 
    if(path->success())
    {
@@ -707,6 +722,7 @@ bool AIPlayer::setPathDestination(const Point3F &pos)
       mPathData.owned = true;
       // Skip node 0, which we are currently standing on.
       moveToNode(1);
+      throwCallback("onPathSuccess");
       return true;
    }
    else
@@ -714,7 +730,7 @@ bool AIPlayer::setPathDestination(const Point3F &pos)
       // Just move normally if we can't path.
       //setMoveDestination(pos, true);
       //return;
-      //throwCallback("onPathFailed");
+      throwCallback("onPathFailed");
       path->deleteObject();
       return false;
    }
@@ -783,11 +799,15 @@ void AIPlayer::followObject(SceneObject *obj, F32 radius)
    if(!isServerObject())
       return;
 
+   if (mFollowData.lastPos == obj->getPosition())
+      return;
+
    if(setPathDestination(obj->getPosition()))
    {
       clearCover();
       mFollowData.object = obj;
       mFollowData.radius = radius;
+      mFollowData.lastPos = obj->getPosition();
    }
 }
 
@@ -798,6 +818,10 @@ DefineEngineMethod(AIPlayer, followObject, void, (SimObjectId obj, F32 radius),,
    "@param radius Maximum distance we let the target escape to.")
 {
    SceneObject *follow;
+   object->clearPath();
+   object->clearCover();
+   object->clearFollow();
+
    if(Sim::findObject(obj, follow))
       object->followObject(follow, radius);
 }

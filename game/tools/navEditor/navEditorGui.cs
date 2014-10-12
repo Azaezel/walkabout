@@ -203,6 +203,18 @@ function NavEditorGui::onLinkSelected(%this, %flags)
 function NavEditorGui::onPlayerSelected(%this, %flags)
 {
    updateLinkData(NavEditorOptionsWindow-->TestProperties, %flags);
+   
+   %player = %this.getPlayer();
+   if(!isObject(%player)) return;
+	WalkaboutIgnore(%player,false);
+   %player.schedule(100, "refreshNav");
+}
+
+function AIPlayer::refreshNav(%this)
+{
+   if(!isObject(%this)) return;
+   WalkaboutUpdateAll(%this,true);
+   %this.schedule(100, "refreshNav");
 }
 
 function NavEditorGui::updateLinkFlags(%this)
